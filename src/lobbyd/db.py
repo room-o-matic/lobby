@@ -3,6 +3,7 @@ import os
 import sqlite3
 from pathlib import Path
 
+from lobbyd import ops
 from lobbyd.ids import now_iso
 
 SCHEMA = """
@@ -158,14 +159,30 @@ def connect(path: Path) -> sqlite3.Connection:
 INTERNAL_TENANT = "internal"
 
 
-def init_db(path: Path) -> None:
+# docs#24: bump SCHEMA_VERSION with every schema change and add MIGRATIONS[old] to take a
+# database from `old` to `old + 1` (in one transaction, see ops.apply_schema). Keep SCHEMA
+# the full current schema for fresh databases. Version 1 is the unversioned baseline.
+SCHEMA_VERSION = 1
+MIGRATIONS: dict[int, ops.Migration] = {}
+
+
+def init_db(path: Path, backup_dir: Path | None = None) -> dict:
+    """Create or upgrade the database; raises ops.SchemaError for unsupported versions."""
     # The DB holds private signing keys: keep the data dir private to this user.
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
+    # Version check first: a refused database must be left exactly as it was.
+    result = ops.apply_schema(
+        path,
+        service="lobbyd",
+        schema=SCHEMA,
+        version=SCHEMA_VERSION,
+        migrations=MIGRATIONS,
+        backup_dir=backup_dir,
+    )
     conn = connect(path)
     try:
         conn.execute("pragma journal_mode = wal")
-        conn.executescript(SCHEMA)
         with conn:
             conn.execute(
                 "insert or ignore into tenants (tenant_id, name, can_host, created_at)"
@@ -174,6 +191,7 @@ def init_db(path: Path) -> None:
             )
     finally:
         conn.close()
+    return result
 
 
 def audit(conn: sqlite3.Connection, actor: str, action: str, **detail) -> None:
