@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -88,3 +88,88 @@ class RoomListing(BaseModel):
 class ListedRoom(RoomListing):
     server_id: str
     updated_at: str
+
+
+Availability = Literal["available", "busy", "draining"]
+OfferState = Literal[
+    "offered",
+    "accepted",
+    "declined",
+    "expired",
+    "cancelled",
+    "joined",
+    "working",
+    "handed_off",
+    "completed",
+]
+
+
+class PeerRegistration(BaseModel):
+    owner: str | None = Field(default=None, max_length=200)
+    capabilities: list[Label] = Field(default_factory=list, max_length=64)
+    availability: Availability = "available"
+    max_assignments: int = Field(default=1, ge=0, le=100)
+    ttl_seconds: int | None = Field(default=None, ge=5)
+
+
+class Peer(BaseModel):
+    instance_id: str
+    principal: str
+    owner: str | None
+    capabilities: list[str]
+    availability: Availability
+    max_assignments: int
+    active_assignments: int
+    registered_at: str
+    last_heartbeat_at: str
+    expires_at: str
+
+
+class OfferCreate(BaseModel):
+    offer_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_.:-]{1,80}$",
+        description="idempotency key; retrying with the same id returns the same offer",
+    )
+    to: str = Field(description="target principal, name@domain", max_length=200)
+    room_url: str = Field(pattern=URL_PATTERN, max_length=2048)
+    task: str = Field(min_length=1, max_length=16 * 1024)
+    issue: str | None = Field(default=None, max_length=2048)
+    role: str | None = Field(default=None, max_length=64)
+    scope: list[Label] | None = Field(default=None, max_length=32)
+    budget: dict[str, JsonValue] | None = None
+    deadline_seconds: int | None = Field(
+        default=None, ge=10, le=30 * 24 * 3600, description="respond-by, from now"
+    )
+
+
+class Offer(BaseModel):
+    offer_id: str
+    requester: str
+    target: str
+    room_url: str
+    task: str
+    issue: str | None
+    role: str | None
+    scope: list[str] | None
+    budget: dict[str, JsonValue] | None
+    deadline: str | None
+    state: OfferState
+    assigned_instance: str | None
+    decline_reason: str | None
+    created_at: str
+    updated_at: str
+
+
+class OfferTransition(BaseModel):
+    instance_id: str = Field(max_length=80)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class OfferProgress(OfferTransition):
+    state: Literal["joined", "working", "handed_off", "completed"]
+
+
+class TransitionResult(BaseModel):
+    offer: Offer
+    changed: bool = Field(description="false when this exact transition already happened")
