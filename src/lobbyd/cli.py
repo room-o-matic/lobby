@@ -1,15 +1,24 @@
 import argparse
+import json
 import sqlite3
 import sys
+from pathlib import Path
 
-from lobbyd import apikeys, db, endpoints, signing
+from lobbyd import apikeys, db, endpoints, ops, signing
 from lobbyd.config import Settings
+from lobbyd.urls import canonical_url
 
 
 def _conn() -> sqlite3.Connection:
     settings = Settings.from_env()
-    db.init_db(settings.db_path)
+    db.init_db(settings.db_path, backup_dir=settings.backup_dir)
     return db.connect(settings.db_path)
+
+
+def _journal(kind: str, **fields) -> None:
+    """docs#24: record a revocation outside the database so a restore replays it. Removals
+    are journaled before they commit: a crash in between errs toward staying revoked."""
+    ops.Journal(Settings.from_env().journal_path).append(kind, **fields)
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -41,6 +50,7 @@ def cmd_key_create(args: argparse.Namespace) -> int:
 def cmd_key_revoke(args: argparse.Namespace) -> int:
     conn = _conn()
     try:
+        _journal("api_key.revoke_name", name=args.name)
         n = apikeys.revoke_keys(conn, args.name)
     finally:
         conn.close()
@@ -67,6 +77,7 @@ def cmd_key_list(args: argparse.Namespace) -> int:
 def cmd_key_revoke_id(args: argparse.Namespace) -> int:
     conn = _conn()
     try:
+        _journal("api_key.revoke_id", key_id=args.key_id)
         ok = apikeys.revoke_key_id(conn, args.key_id)
     finally:
         conn.close()
@@ -90,7 +101,11 @@ def cmd_tenant_create(args: argparse.Namespace) -> int:
 def cmd_tenant_status(args: argparse.Namespace) -> int:
     conn = _conn()
     try:
+        if args.status == "disabled":
+            _journal("tenant.status", tenant_id=args.tenant_id, status=args.status)
         ok = apikeys.set_tenant_status(conn, args.tenant_id, args.status)
+        if ok and args.status != "disabled":
+            _journal("tenant.status", tenant_id=args.tenant_id, status=args.status)
     finally:
         conn.close()
     print(f"{args.tenant_id}: {args.status}" if ok else f"error: no tenant {args.tenant_id!r}")
@@ -132,6 +147,7 @@ def cmd_endpoint_approve(args: argparse.Namespace) -> int:
 def cmd_endpoint_revoke(args: argparse.Namespace) -> int:
     conn = _conn()
     try:
+        _journal("endpoint.revoke", url=canonical_url(args.url))
         n = endpoints.revoke(conn, args.url)
     except ValueError as err:
         print(f"error: {err}", file=sys.stderr)
@@ -206,6 +222,46 @@ def cmd_signing_retire(args: argparse.Namespace) -> int:
         print(f"error: no active key {args.kid!r}", file=sys.stderr)
         return 1
     print(f"retired {args.kid}")
+    return 0
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    from lobbyd import recovery
+
+    manifest = recovery.backup(Settings.from_env(), Path(args.out))
+    print(json.dumps({k: v for k, v in manifest.items() if k != "files"}, indent=2))
+    print(
+        f"backed up {len(manifest['files'])} files to {args.out}. It contains private signing"
+        " keys: encrypt it before it leaves this host.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def cmd_verify_backup(args: argparse.Namespace) -> int:
+    try:
+        manifest = ops.verify_backup(Path(args.path))
+    except ops.BackupError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(
+        f"ok: {manifest['service']} schema v{manifest['schema_version']},"
+        f" {len(manifest['files'])} files, taken {manifest['created_at']}"
+    )
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    from lobbyd import recovery
+
+    try:
+        report = recovery.restore(
+            Settings.from_env(), Path(args.source), force=args.force, id_gap=args.id_gap
+        )
+    except (ops.BackupError, ops.SchemaError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(report, indent=2))
     return 0
 
 
@@ -287,6 +343,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="emergency: retire now (compromised key)"
     )
     retire.set_defaults(func=cmd_signing_retire)
+
+    # docs#24: operate on $LOBBYD_DATA_DIR directly (stop the server before restoring).
+    b = sub.add_parser("backup", help="consistent snapshot of the database (safe while serving)")
+    b.add_argument("--out", required=True, help="new directory to write the backup into")
+    b.set_defaults(func=cmd_backup)
+    v = sub.add_parser("verify-backup", help="check a backup's checksums and integrity")
+    v.add_argument("path")
+    v.set_defaults(func=cmd_verify_backup)
+    r = sub.add_parser("restore", help="restore a backup into $LOBBYD_DATA_DIR (server stopped)")
+    r.add_argument("source", help="backup directory")
+    r.add_argument("--force", action="store_true", help="move an existing database aside")
+    r.add_argument(
+        "--id-gap", type=int, default=1_000_000, help="advance audit IDs past the snapshot"
+    )
+    r.set_defaults(func=cmd_restore)
     return p
 
 

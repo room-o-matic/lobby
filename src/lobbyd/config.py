@@ -26,9 +26,22 @@ class Settings:
     default_lease_ttl_seconds: int = 60
     max_lease_ttl_seconds: int = 600
 
+    # docs#24: revocations are also journaled here, outside the database, and replayed after
+    # a restore. Put it on another volume to survive losing the data dir.
+    revocation_journal: Path | None = None
+    min_free_bytes: int = 64 * 1024 * 1024  # readiness fails below this much free disk
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "lobbyd.sqlite"
+
+    @property
+    def backup_dir(self) -> Path:
+        return self.data_dir / "backups"
+
+    @property
+    def journal_path(self) -> Path:
+        return self.revocation_journal or self.data_dir / "revocations.jsonl"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,4 +50,7 @@ class Settings:
             issuer=os.environ.get("LOBBYD_ISSUER", cls.issuer).rstrip("/"),
             domain=os.environ.get("LOBBYD_DOMAIN", cls.domain),
             access_token_ttl_seconds=int(os.environ.get("LOBBYD_ACCESS_TOKEN_TTL", 900)),
+            revocation_journal=Path(j)
+            if (j := os.environ.get("LOBBYD_REVOCATION_JOURNAL"))
+            else None,
         )
