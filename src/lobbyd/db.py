@@ -20,6 +20,9 @@ create table if not exists signing_keys (
   kid text primary key,
   private_pem text not null,
   created_at text not null,
+  -- Published in the JWKS from created_at, but only signs from activates_at (docs#6).
+  activates_at text not null,
+  last_issued_at text,
   retired_at text
 );
 
