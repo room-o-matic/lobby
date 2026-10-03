@@ -10,6 +10,14 @@ from lobbyd.verify import InvalidToken, TokenVerifier
 ROOMS_A = "https://rooms-a.test"
 
 
+@pytest.fixture(autouse=True)
+def approved_audiences(make_key, approve):
+    """Tokens are only minted for approved service endpoints (docs#5)."""
+    for name, url in [("rooms-a", ROOMS_A), ("rooms-b", "https://rooms-b.test")]:
+        make_key(name, "roomsd")
+        approve(name, url)
+
+
 def get_token(client, headers, audience=ROOMS_A):
     r = client.post("/v1/token", json={"audience": audience}, headers=headers)
     assert r.status_code == 200, r.text
@@ -183,7 +191,7 @@ def test_whoami_and_audit(client, settings, boostie):
     }
     get_token(client, boostie)
     conn = db.connect(settings.db_path)
-    rows = conn.execute("select actor, action from audit").fetchall()
+    rows = conn.execute("select actor, action from audit where action like 'token.%'").fetchall()
     conn.close()
     assert [tuple(r) for r in rows] == [("boostie@test", "token.issue")]
 

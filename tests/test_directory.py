@@ -39,8 +39,9 @@ def test_server_register_and_list(client, rooms_a, boostie):
     assert client.get("/v1/servers/roomsd", params={"tag": "nope"}, headers=boostie).json() == []
 
 
-def test_server_can_only_manage_itself(client, rooms_a, make_key, boostie):
+def test_server_can_only_manage_itself(client, rooms_a, make_key, approve, boostie):
     make_key("rooms-b", "roomsd")
+    approve("rooms-b", "https://rooms-b.test")
     body = {"base_url": "https://rooms-b.test"}
     assert client.put("/v1/servers/roomsd/rooms-b", json=body, headers=rooms_a).status_code == 403
     assert client.put("/v1/servers/roomsd/boostie", json=body, headers=boostie).status_code == 403
@@ -89,12 +90,14 @@ def test_agentd_scope_rules(client, agentd1, boostie, rooms_a):
     assert client.get("/v1/registry/agentd", headers=rooms_a).status_code == 403
 
 
-def test_agentd_ordering_and_expiry(client, settings, make_key, boostie):
+def test_agentd_ordering_and_expiry(client, settings, make_key, approve, boostie):
     for name, body in {
-        "h-busy": agentd_reg(max_sessions=2, active_sessions=2),
-        "h-roomy": agentd_reg(max_sessions=8, active_sessions=1),
+        "h-busy": agentd_reg(base_url="http://busy:8765", max_sessions=2, active_sessions=2),
+        "h-roomy": agentd_reg(base_url="http://roomy:8765", max_sessions=8, active_sessions=1),
     }.items():
-        client.put(f"/v1/registry/agentd/{name}", json=body, headers=make_key(name, "agentd"))
+        headers = make_key(name, "agentd")
+        approve(name, body["base_url"])
+        client.put(f"/v1/registry/agentd/{name}", json=body, headers=headers)
     ids = [i["instance_id"] for i in client.get("/v1/registry/agentd", headers=boostie).json()]
     assert ids == ["h-roomy", "h-busy"]
     expire(settings, "agentd_instances", "instance_id", "h-roomy")
@@ -163,7 +166,7 @@ def test_rooms_hidden_when_server_lapses(client, settings, rooms_a, boostie):
 def test_unlist_only_own(client, rooms_a, make_key, boostie):
     register_rooms_a(client, rooms_a)
     client.put("/v1/rooms", json=listing(), headers=rooms_a)
-    rooms_b = make_key("rooms-b", "roomsd")
+    rooms_b = make_key("rooms-b", "roomsd")  # no endpoint needed to attempt a delete
     url = listing()["room_url"]
     client.delete("/v1/rooms", params={"room_url": url}, headers=rooms_b)
     assert len(client.get("/v1/rooms", headers=boostie).json()) == 1

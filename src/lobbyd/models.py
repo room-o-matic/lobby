@@ -1,6 +1,10 @@
+from typing import Annotated
+
 from pydantic import BaseModel, Field, JsonValue
 
-URL_PATTERN = r"^https?://[^\s/]+(/[^\s]*)?$"
+# A cheap shape check only; urls.canonical_url is the real gate (docs#5).
+URL_PATTERN = r"^(?i:https?)://[^\s/]+(/[^\s]*)?$"
+Label = Annotated[str, Field(min_length=1, max_length=64)]
 
 
 class WellKnown(BaseModel):
@@ -35,7 +39,7 @@ class WhoAmI(BaseModel):
 
 class RoomsdRegistration(BaseModel):
     base_url: str = Field(pattern=URL_PATTERN, max_length=2048)
-    tags: list[str] = Field(default_factory=list)
+    tags: list[Label] = Field(default_factory=list, max_length=32)
     metadata: dict[str, JsonValue] | None = None
     ttl_seconds: int | None = Field(default=None, ge=5)
 
@@ -52,9 +56,9 @@ class RoomsdServer(BaseModel):
 
 class AgentdRegistration(BaseModel):
     base_url: str = Field(pattern=URL_PATTERN, max_length=2048)
-    worker_types: list[str] = Field(min_length=1)
-    profiles: list[str] = Field(default_factory=list)
-    max_sessions: int = Field(ge=0)
+    worker_types: list[Label] = Field(min_length=1, max_length=64)
+    profiles: list[Label] = Field(default_factory=list, max_length=64)
+    max_sessions: int = Field(ge=0, le=10_000)
     active_sessions: int = Field(default=0, ge=0)
     metadata: dict[str, JsonValue] | None = None
     ttl_seconds: int | None = Field(default=None, ge=5)
@@ -78,7 +82,7 @@ class RoomListing(BaseModel):
     room_url: str = Field(pattern=URL_PATTERN, max_length=2048)
     name: str = Field(min_length=1, max_length=200)
     purpose: str | None = Field(default=None, max_length=4000)
-    tags: list[str] = Field(default_factory=list)
+    tags: list[Label] = Field(default_factory=list, max_length=32)
 
 
 class ListedRoom(RoomListing):
