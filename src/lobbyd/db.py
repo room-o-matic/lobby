@@ -68,7 +68,10 @@ create table if not exists audit (
 
 
 def connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, timeout=10)
+    # One connection per request, but FastAPI runs a sync dependency and its route in
+    # different threadpool threads, so the connection must be allowed to change threads.
+    # It is never used by two threads at once.
+    conn = sqlite3.connect(path, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("pragma busy_timeout = 10000")
     return conn

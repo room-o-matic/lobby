@@ -169,3 +169,16 @@ def test_unlist_only_own(client, rooms_a, make_key, boostie):
     assert len(client.get("/v1/rooms", headers=boostie).json()) == 1
     client.delete("/v1/rooms", params={"room_url": url}, headers=rooms_a)
     assert client.get("/v1/rooms", headers=boostie).json() == []
+
+
+def test_request_connection_can_change_threads(settings, client):
+    """Regression: see roomsd; FastAPI moves a request's connection between threads."""
+    import threading
+
+    conn = db.connect(settings.db_path)
+    result = []
+    t = threading.Thread(target=lambda: result.append(conn.execute("select 1").fetchone()[0]))
+    t.start()
+    t.join()
+    conn.close()
+    assert result == [1]
