@@ -25,7 +25,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 
-from lobbyd import db
+from lobbyd import db, endpoints
 from lobbyd.apikeys import KeyHolder
 from lobbyd.deps import (
     Caller,
@@ -170,17 +170,27 @@ def register_peer(
     ).fetchone()
     if existing and existing["principal"] != caller.identity:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "instance id belongs to another agent")
+    others = conn.execute(
+        "select count(*) from peers where principal = ? and instance_id != ? and expires_at > ?",
+        (caller.identity, instance_id, now_iso()),
+    ).fetchone()[0]
+    if others >= settings.max_peer_instances:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"at most {settings.max_peer_instances} live sessions per agent",
+        )
     ttl = lease_ttl(settings, req.ttl_seconds)
     now = now_iso()
     registered_at, is_new = lease_registered_at(conn, "peers", "instance_id", instance_id, now)
     with conn:
         conn.execute(
-            "insert or replace into peers (instance_id, principal, owner, capabilities_json,"
-            " availability, max_assignments, registered_at, last_heartbeat_at, expires_at)"
-            " values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "insert or replace into peers (instance_id, principal, tenant_id, owner,"
+            " capabilities_json, availability, max_assignments, registered_at,"
+            " last_heartbeat_at, expires_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 instance_id,
                 caller.identity,
+                caller.tenant_id,
                 req.owner,
                 json.dumps(req.capabilities),
                 req.availability,
@@ -217,7 +227,9 @@ def list_peers(
 ) -> list[Peer]:
     """Live peer instances (lapsed leases are offline and not shown)."""
     require_scope(caller, "agent")
-    sql, params = "select * from peers where expires_at > ?", [now_iso()]
+    # Peers are only visible within the caller's tenant (docs#11).
+    sql = "select * from peers where expires_at > ? and tenant_id = ?"
+    params = [now_iso(), caller.tenant_id]
     if capability:
         sql += " and exists (select 1 from json_each(capabilities_json) where value = ?)"
         params.append(capability)
@@ -264,12 +276,16 @@ def inbox(instance_id: InstanceId, conn: Conn, caller: Caller) -> list[Offer]:
 # ----- offers --------------------------------------------------------------------------
 
 
-def _check_room_url(conn: sqlite3.Connection, room_url: str) -> str:
+def _check_room_url(conn: sqlite3.Connection, room_url: str, tenant_id: str) -> str:
     try:
         url = canonical_url(room_url)
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"bad room_url: {e}") from e
-    for (base,) in conn.execute("select url from endpoints where scope = 'roomsd'"):
+    rows = conn.execute(
+        f"select url from endpoints where scope = 'roomsd' and {endpoints.visible_sql('url')}",
+        (tenant_id, tenant_id),
+    )
+    for (base,) in rows:
         prefix = base + "/v1/rooms/"
         if url.startswith(prefix) and ROOM_ID_RE.match(url[len(prefix) :]):
             return url
@@ -279,14 +295,16 @@ def _check_room_url(conn: sqlite3.Connection, room_url: str) -> str:
     )
 
 
-def _check_target(conn: sqlite3.Connection, settings, target: str) -> None:
+def _check_target(conn: sqlite3.Connection, settings, target: str, tenant_id: str) -> None:
+    """Offers stay inside a tenant: another tenant's agents look like unknown agents."""
     name, sep, domain = target.rpartition("@")
     known = (
         sep
         and domain == settings.domain
         and conn.execute(
-            "select 1 from api_keys where name = ? and scope = 'agent' and revoked_at is null",
-            (name,),
+            "select 1 from api_keys where name = ? and scope = 'agent' and revoked_at is null"
+            " and tenant_id = ?",
+            (name, tenant_id),
         ).fetchone()
     )
     if not known:
@@ -299,8 +317,17 @@ def create_offer(
 ) -> Offer:
     """Offer room work to a named agent. Retrying with the same offer_id is idempotent."""
     require_scope(caller, "agent")
-    room_url = _check_room_url(conn, req.room_url)
-    _check_target(conn, settings, req.to)
+    room_url = _check_room_url(conn, req.room_url, caller.tenant_id)
+    _check_target(conn, settings, req.to, caller.tenant_id)
+    open_count = conn.execute(
+        "select count(*) from offers where requester = ? and state = 'offered'",
+        (caller.identity,),
+    ).fetchone()[0]
+    if open_count >= settings.max_open_offers:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"at most {settings.max_open_offers} open offers per requester",
+        )
     if req.to == caller.identity:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "cannot offer work to yourself")
     offer_id = req.offer_id or new_id("off")

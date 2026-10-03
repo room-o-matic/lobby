@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from lobbyd import db, signing
 from lobbyd.config import Settings
+from lobbyd.limits import AuditPruner, RateLimiter
 from lobbyd.routes import directory, identity, peers
 
 
@@ -16,6 +17,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="lobbyd", version="0.1.0")
     app.state.settings = settings
+    app.state.token_limiter = RateLimiter(settings.token_rate_per_minute)
+    app.state.audit_pruner = AuditPruner(settings.audit_retention_days)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

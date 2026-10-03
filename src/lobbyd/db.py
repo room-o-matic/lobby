@@ -6,10 +6,23 @@ from pathlib import Path
 from lobbyd.ids import now_iso
 
 SCHEMA = """
+-- docs#11: every key belongs to a tenant (an owner). The built-in "internal" tenant is the
+-- operator's own and can host services; other tenants can't unless granted can_host.
+create table if not exists tenants (
+  tenant_id text primary key,
+  name text,
+  can_host integer not null default 0,
+  status text not null default 'active',
+  created_at text not null
+);
+
 create table if not exists api_keys (
   key_hash text primary key,
+  key_id text not null unique,
   name text not null,
   scope text not null,
+  tenant_id text not null references tenants(tenant_id),
+  label text,
   created_at text not null,
   revoked_at text
 );
@@ -30,12 +43,21 @@ create table if not exists endpoints (
   url text primary key,
   name text not null,
   scope text not null,
+  tenant_id text not null,
   max_sessions integer not null,
   worker_types_json text,
   approved_at text not null
 );
 
 create index if not exists endpoints_name on endpoints(name);
+
+-- docs#11: lets a tenant use (see, and get tokens for) another tenant's service endpoint.
+create table if not exists service_grants (
+  tenant_id text not null,
+  url text not null,
+  granted_at text not null,
+  primary key (tenant_id, url)
+);
 
 create table if not exists roomsd_servers (
   server_id text primary key,
@@ -75,6 +97,7 @@ create index if not exists listed_rooms_server on listed_rooms(server_id);
 create table if not exists peers (
   instance_id text primary key,
   principal text not null,
+  tenant_id text not null,
   owner text,
   capabilities_json text not null,
   availability text not null,
@@ -128,6 +151,9 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+INTERNAL_TENANT = "internal"
+
+
 def init_db(path: Path) -> None:
     # The DB holds private signing keys: keep the data dir private to this user.
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -136,6 +162,12 @@ def init_db(path: Path) -> None:
     try:
         conn.execute("pragma journal_mode = wal")
         conn.executescript(SCHEMA)
+        with conn:
+            conn.execute(
+                "insert or ignore into tenants (tenant_id, name, can_host, created_at)"
+                " values (?, 'operator', 1, ?)",
+                (INTERNAL_TENANT, now_iso()),
+            )
     finally:
         conn.close()
 

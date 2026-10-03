@@ -22,10 +22,10 @@ def client(settings) -> TestClient:
 def make_key(client, settings) -> Callable[..., dict[str, str]]:
     """Issue an API key and return its Authorization headers."""
 
-    def _make(name: str, scope: apikeys.Scope = "agent") -> dict[str, str]:
+    def _make(name: str, scope: apikeys.Scope = "agent", **kw) -> dict[str, str]:
         conn = db.connect(settings.db_path)
         try:
-            key = apikeys.create_key(conn, name, scope)
+            key = apikeys.create_key(conn, name, scope, **kw)
         finally:
             conn.close()
         return {"Authorization": f"Bearer {key}"}

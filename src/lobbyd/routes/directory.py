@@ -129,13 +129,26 @@ def deregister_server(server_id: EntryId, conn: Conn, caller: Caller) -> Respons
 
 
 @router.get("/servers/roomsd", tags=["servers"])
-def list_servers(conn: Conn, caller: Caller, tag: str | None = None) -> list[RoomsdServer]:
+def list_servers(
+    conn: Conn,
+    caller: Caller,
+    tag: str | None = None,
+    after: str | None = Query(default=None, description="server_id to continue after"),
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[RoomsdServer]:
+    """Live servers visible to the caller's tenant (its own and granted endpoints)."""
     require_scope(caller, "agent", "roomsd")
-    sql, params = "select * from roomsd_servers where expires_at > ?", [now_iso()]
+    sql = (
+        f"select * from roomsd_servers where expires_at > ? and {endpoints.visible_sql('base_url')}"
+    )
+    params = [now_iso(), caller.tenant_id, caller.tenant_id]
     if tag:
         sql += " and exists (select 1 from json_each(tags_json) where value = ?)"
         params.append(tag)
-    rows = conn.execute(sql + " order by server_id", params).fetchall()
+    if after:
+        sql += " and server_id > ?"
+        params.append(after)
+    rows = conn.execute(sql + " order by server_id limit ?", [*params, limit]).fetchall()
     return [server_from_row(r) for r in rows]
 
 
@@ -236,11 +249,15 @@ def list_instances(
     worker_type: str | None = None,
     profile: str | None = None,
     has_capacity: Annotated[bool, Query(description="only instances with a free slot")] = False,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[AgentdInstance]:
     """Live instances, most spare capacity first."""
     require_scope(caller, "agent")
-    sql = "select * from agentd_instances where expires_at > ?"
-    params: list = [now_iso()]
+    sql = (
+        "select * from agentd_instances where expires_at > ?"
+        f" and {endpoints.visible_sql('base_url')}"
+    )
+    params: list = [now_iso(), caller.tenant_id, caller.tenant_id]
     if worker_type:
         sql += " and exists (select 1 from json_each(worker_types_json) where value = ?)"
         params.append(worker_type)
@@ -249,8 +266,8 @@ def list_instances(
         params.append(profile)
     if has_capacity:
         sql += " and active_sessions < max_sessions"
-    sql += " order by (max_sessions - active_sessions) desc, last_heartbeat_at desc"
-    return [instance_from_row(r) for r in conn.execute(sql, params).fetchall()]
+    sql += " order by (max_sessions - active_sessions) desc, last_heartbeat_at desc limit ?"
+    return [instance_from_row(r) for r in conn.execute(sql, [*params, limit]).fetchall()]
 
 
 @router.get("/registry/agentd/{instance_id}", tags=["registry"])
@@ -261,7 +278,7 @@ def get_instance(instance_id: EntryId, conn: Conn, caller: Caller) -> AgentdInst
         "select * from agentd_instances where instance_id = ? and expires_at > ?",
         (instance_id, now_iso()),
     ).fetchone()
-    if row is None:
+    if row is None or not endpoints.visible(conn, caller.tenant_id, row["base_url"]):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "instance not registered or expired")
     return instance_from_row(row)
 
@@ -297,9 +314,18 @@ def require_own_room_url(conn: sqlite3.Connection, server_id: str, room_url: str
 
 
 @router.put("/rooms", tags=["rooms"])
-def list_room(req: RoomListing, conn: Conn, caller: Caller) -> ListedRoom:
+def list_room(req: RoomListing, conn: Conn, caller: Caller, settings: SettingsDep) -> ListedRoom:
     require_scope(caller, "roomsd")
     room_url = require_own_room_url(conn, caller.name, req.room_url)
+    listed = conn.execute(
+        "select count(*) from listed_rooms where server_id = ? and room_url != ?",
+        (caller.name, room_url),
+    ).fetchone()[0]
+    if listed >= settings.max_listed_rooms_per_server:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"listing budget reached ({settings.max_listed_rooms_per_server} rooms per server)",
+        )
     with conn:
         # The WHERE makes the ownership check and the write one atomic statement: a
         # listing owned by another server is never overwritten (docs#5).
@@ -346,9 +372,9 @@ def search_rooms(
     require_scope(caller, "agent", "roomsd")
     sql = (
         "select r.* from listed_rooms r join roomsd_servers s on s.server_id = r.server_id"
-        " where s.expires_at > ?"
+        f" where s.expires_at > ? and {endpoints.visible_sql('s.base_url')}"
     )
-    params: list = [now_iso()]
+    params: list = [now_iso(), caller.tenant_id, caller.tenant_id]
     if q:
         sql += " and (r.name like ? escape '\\' or r.purpose like ? escape '\\')"
         pattern = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
