@@ -1,0 +1,94 @@
+import json
+import os
+import sqlite3
+from pathlib import Path
+
+from lobbyd.ids import now_iso
+
+SCHEMA = """
+create table if not exists api_keys (
+  key_hash text primary key,
+  name text not null,
+  scope text not null,
+  created_at text not null,
+  revoked_at text
+);
+
+create index if not exists api_keys_name on api_keys(name);
+
+create table if not exists signing_keys (
+  kid text primary key,
+  private_pem text not null,
+  created_at text not null,
+  retired_at text
+);
+
+create table if not exists roomsd_servers (
+  server_id text primary key,
+  base_url text not null,
+  tags_json text not null,
+  metadata_json text,
+  registered_at text not null,
+  last_heartbeat_at text not null,
+  expires_at text not null
+);
+
+create table if not exists agentd_instances (
+  instance_id text primary key,
+  base_url text not null,
+  worker_types_json text not null,
+  profiles_json text not null,
+  max_sessions integer not null,
+  active_sessions integer not null,
+  metadata_json text,
+  registered_at text not null,
+  last_heartbeat_at text not null,
+  expires_at text not null
+);
+
+create table if not exists listed_rooms (
+  room_url text primary key,
+  server_id text not null,
+  name text not null,
+  purpose text,
+  tags_json text not null,
+  updated_at text not null
+);
+
+create index if not exists listed_rooms_server on listed_rooms(server_id);
+
+create table if not exists audit (
+  id integer primary key autoincrement,
+  actor text not null,
+  action text not null,
+  detail_json text,
+  created_at text not null
+);
+"""
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("pragma busy_timeout = 10000")
+    return conn
+
+
+def init_db(path: Path) -> None:
+    # The DB holds private signing keys: keep the data dir private to this user.
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    conn = connect(path)
+    try:
+        conn.execute("pragma journal_mode = wal")
+        conn.executescript(SCHEMA)
+    finally:
+        conn.close()
+
+
+def audit(conn: sqlite3.Connection, actor: str, action: str, **detail) -> None:
+    detail = {k: v for k, v in detail.items() if v is not None}
+    conn.execute(
+        "insert into audit (actor, action, detail_json, created_at) values (?, ?, ?, ?)",
+        (actor, action, json.dumps(detail) if detail else None, now_iso()),
+    )
