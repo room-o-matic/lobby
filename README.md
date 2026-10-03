@@ -76,3 +76,7 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 `src/lobbyd/verify.py` is the canonical token verifier, and roomsd and agentd carry copies of it. `src/lobbyd/ops.py` is shared, identical, with both. Architecture notes are in the docs repo's [CLAUDE.md](https://github.com/room-o-matic/docs/blob/main/CLAUDE.md). Issues are tracked in [room-o-matic/docs](https://github.com/room-o-matic/docs/issues).
+
+## License
+
+[Apache-2.0](LICENSE)
