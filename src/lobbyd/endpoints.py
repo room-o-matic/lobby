@@ -29,7 +29,8 @@ def approve(
     """Approve `url` for the roomsd/agentd key `name`. Raises ValueError on conflicts."""
     canonical = canonical_url(url)
     key = conn.execute(
-        "select scope from api_keys where name = ? and revoked_at is null limit 1", (name,)
+        "select scope, tenant_id from api_keys where name = ? and revoked_at is null limit 1",
+        (name,),
     ).fetchone()
     if key is None or key["scope"] not in ("roomsd", "agentd"):
         raise ValueError(f"{name!r} has no live roomsd/agentd key; create the key first")
@@ -43,12 +44,13 @@ def approve(
             raise ValueError(f"{canonical} is already approved for {owner['name']!r}")
         conn.execute(
             "insert or replace into endpoints"
-            " (url, name, scope, max_sessions, worker_types_json, approved_at)"
-            " values (?, ?, ?, ?, ?, ?)",
+            " (url, name, scope, tenant_id, max_sessions, worker_types_json, approved_at)"
+            " values (?, ?, ?, ?, ?, ?, ?)",
             (
                 canonical,
                 name,
                 key["scope"],
+                key["tenant_id"],
                 cap,
                 json.dumps(worker_types) if worker_types else None,
                 now_iso(),
@@ -73,3 +75,32 @@ def revoke(conn: sqlite3.Connection, url: str) -> int:
 def lookup(conn: sqlite3.Connection, url: str) -> sqlite3.Row | None:
     """The approval for a canonical URL, if any."""
     return conn.execute("select * from endpoints where url = ?", (url,)).fetchone()
+
+
+def grant_service(conn: sqlite3.Connection, tenant_id: str, url: str) -> str:
+    """Let another tenant use an endpoint: see it in the directory and get tokens for it."""
+    canonical = canonical_url(url)
+    if lookup(conn, canonical) is None:
+        raise ValueError(f"{canonical} is not an approved endpoint")
+    with conn:
+        conn.execute(
+            "insert or ignore into service_grants (tenant_id, url, granted_at) values (?, ?, ?)",
+            (tenant_id, canonical, now_iso()),
+        )
+        db.audit(conn, "operator", "service.grant", tenant=tenant_id, url=canonical)
+    return canonical
+
+
+def visible_sql(alias: str = "url") -> str:
+    """SQL predicate: endpoint `alias` is visible to tenant ? (twice). docs#11."""
+    return (
+        f"(exists (select 1 from endpoints e where e.url = {alias} and e.tenant_id = ?)"
+        f" or exists (select 1 from service_grants g where g.url = {alias} and g.tenant_id = ?))"
+    )
+
+
+def visible(conn: sqlite3.Connection, tenant_id: str, url: str) -> bool:
+    return (
+        conn.execute(f"select {visible_sql('?')}", (url, tenant_id, url, tenant_id)).fetchone()[0]
+        == 1
+    )

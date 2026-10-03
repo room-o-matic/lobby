@@ -16,6 +16,13 @@ class Settings:
     # key can be retired only once its last token has expired, plus clock skew.
     key_publish_lead_seconds: int = 360
     clock_skew_seconds: int = 60
+    # docs#11 budgets: requests over them get 413/422/429.
+    token_rate_per_minute: int = 120  # per API key
+    audit_retention_days: int = 30
+    max_metadata_bytes: int = 4096
+    max_listed_rooms_per_server: int = 1000
+    max_peer_instances: int = 16  # per agent
+    max_open_offers: int = 200  # per requester
     default_lease_ttl_seconds: int = 60
     max_lease_ttl_seconds: int = 600
 

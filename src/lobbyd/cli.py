@@ -22,7 +22,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_key_create(args: argparse.Namespace) -> int:
     conn = _conn()
     try:
-        key = apikeys.create_key(conn, args.name, args.scope)
+        key = apikeys.create_key(
+            conn, args.name, args.scope, tenant_id=args.tenant, label=args.label
+        )
         if args.endpoint:
             if args.scope not in ("roomsd", "agentd"):
                 raise ValueError("--endpoint is only for roomsd/agentd keys")
@@ -43,6 +45,68 @@ def cmd_key_revoke(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(f"revoked {n} key(s) for {args.name}")
+    return 0
+
+
+def cmd_key_list(args: argparse.Namespace) -> int:
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "select key_id, name, scope, tenant_id, label, created_at, revoked_at"
+            " from api_keys order by tenant_id, name, created_at"
+        ).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        state = f"revoked {r['revoked_at']}" if r["revoked_at"] else "active"
+        label = f" [{r['label']}]" if r["label"] else ""
+        print(f"{r['key_id']}  {r['tenant_id']}/{r['name']} {r['scope']}{label}  {state}")
+    return 0
+
+
+def cmd_key_revoke_id(args: argparse.Namespace) -> int:
+    conn = _conn()
+    try:
+        ok = apikeys.revoke_key_id(conn, args.key_id)
+    finally:
+        conn.close()
+    print(f"revoked {args.key_id}" if ok else f"error: no active key {args.key_id!r}")
+    return 0 if ok else 1
+
+
+def cmd_tenant_create(args: argparse.Namespace) -> int:
+    conn = _conn()
+    try:
+        apikeys.create_tenant(conn, args.tenant_id, name=args.name, can_host=args.can_host)
+    except (ValueError, sqlite3.IntegrityError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+    print(f"created tenant {args.tenant_id}")
+    return 0
+
+
+def cmd_tenant_status(args: argparse.Namespace) -> int:
+    conn = _conn()
+    try:
+        ok = apikeys.set_tenant_status(conn, args.tenant_id, args.status)
+    finally:
+        conn.close()
+    print(f"{args.tenant_id}: {args.status}" if ok else f"error: no tenant {args.tenant_id!r}")
+    return 0 if ok else 1
+
+
+def cmd_tenant_grant(args: argparse.Namespace) -> int:
+    conn = _conn()
+    try:
+        url = endpoints.grant_service(conn, args.tenant_id, args.url)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+    print(f"{args.tenant_id} may now use {url}")
     return 0
 
 
@@ -159,12 +223,38 @@ def build_parser() -> argparse.ArgumentParser:
     create = key_sub.add_parser("create", help="issue an API key and print it")
     create.add_argument("name", help="agent name, agentd instance_id, or roomsd server_id")
     create.add_argument("--scope", choices=apikeys.SCOPES, default="agent")
+    create.add_argument("--tenant", default="internal", help="owning tenant (default internal)")
+    create.add_argument("--label", help="which deployment holds this credential")
     create.add_argument("--endpoint", help="roomsd/agentd: also approve this base URL")
     create.add_argument("--max-sessions", type=int, help="agentd: approved capacity cap")
     create.set_defaults(func=cmd_key_create)
     revoke = key_sub.add_parser("revoke", help="revoke all keys for a name")
     revoke.add_argument("name")
     revoke.set_defaults(func=cmd_key_revoke)
+    key_sub.add_parser("list", help="list keys by tenant").set_defaults(func=cmd_key_list)
+    revoke_id = key_sub.add_parser("revoke-id", help="revoke one credential by key id")
+    revoke_id.add_argument("key_id")
+    revoke_id.set_defaults(func=cmd_key_revoke_id)
+
+    tenant = sub.add_parser("tenant", help="owners: create, disable/enable, grant services")
+    tenant_sub = tenant.add_subparsers(dest="tenant_command", required=True)
+    t_create = tenant_sub.add_parser("create")
+    t_create.add_argument("tenant_id")
+    t_create.add_argument("--name")
+    t_create.add_argument(
+        "--can-host", action="store_true", help="may hold roomsd/agentd (service) keys"
+    )
+    t_create.set_defaults(func=cmd_tenant_create)
+    for status in ("disable", "enable"):
+        t = tenant_sub.add_parser(status, help=f"{status} every key of the tenant")
+        t.add_argument("tenant_id")
+        t.set_defaults(
+            func=cmd_tenant_status, status="disabled" if status == "disable" else "active"
+        )
+    t_grant = tenant_sub.add_parser("grant", help="let a tenant use a service endpoint")
+    t_grant.add_argument("tenant_id")
+    t_grant.add_argument("url")
+    t_grant.set_defaults(func=cmd_tenant_grant)
 
     ep = sub.add_parser("endpoint", help="approve service endpoints (roomsd/agentd)")
     ep_sub = ep.add_subparsers(dest="ep_command", required=True)

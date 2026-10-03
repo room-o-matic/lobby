@@ -1,10 +1,18 @@
+import json
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, Field, JsonValue, field_validator
 
 # A cheap shape check only; urls.canonical_url is the real gate (docs#5).
 URL_PATTERN = r"^(?i:https?)://[^\s/]+(/[^\s]*)?$"
 Label = Annotated[str, Field(min_length=1, max_length=64)]
+MAX_METADATA_BYTES = 4096  # docs#11; see Settings.max_metadata_bytes
+
+
+def _cap_metadata(value):
+    if value is not None and len(json.dumps(value).encode()) > MAX_METADATA_BYTES:
+        raise ValueError(f"metadata is over {MAX_METADATA_BYTES} bytes")
+    return value
 
 
 class WellKnown(BaseModel):
@@ -43,6 +51,11 @@ class RoomsdRegistration(BaseModel):
     metadata: dict[str, JsonValue] | None = None
     ttl_seconds: int | None = Field(default=None, ge=5)
 
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_cap(cls, value):
+        return _cap_metadata(value)
+
 
 class RoomsdServer(BaseModel):
     server_id: str
@@ -62,6 +75,11 @@ class AgentdRegistration(BaseModel):
     active_sessions: int = Field(default=0, ge=0)
     metadata: dict[str, JsonValue] | None = None
     ttl_seconds: int | None = Field(default=None, ge=5)
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_cap(cls, value):
+        return _cap_metadata(value)
 
 
 class AgentdInstance(BaseModel):

@@ -121,6 +121,7 @@ def issue(
     audience: str,
     scope: str,
     ttl_seconds: int,
+    tenant: str | None = None,
 ) -> tuple[str, dict]:
     kid, key = _active(conn)
     now = int(time.time())
@@ -134,6 +135,8 @@ def issue(
         "exp": now + ttl_seconds,
         "jti": new_id("tok"),
     }
+    if tenant:
+        claims["tenant"] = tenant  # receiving services may scope grants by it (docs#11)
     with conn:
         conn.execute("update signing_keys set last_issued_at = ? where kid = ?", (now_iso(), kid))
     return jwt.encode(claims, key, algorithm=ALGORITHM, headers={"kid": kid}), claims
