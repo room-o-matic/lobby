@@ -22,7 +22,7 @@ from lobbyd.deps import (
     require_scope,
     require_self,
 )
-from lobbyd.ids import iso_in, now_iso
+from lobbyd.ids import iso_in, new_id, now_iso
 from lobbyd.models import (
     AgentdInstance,
     AgentdRegistration,
@@ -71,10 +71,12 @@ def _loads(value: str | None):
 # ----- roomsd servers ---------------------------------------------------------------
 
 
-def server_from_row(row: sqlite3.Row) -> RoomsdServer:
+def server_from_row(row: sqlite3.Row, listed_rooms: int = 0) -> RoomsdServer:
     return RoomsdServer(
         server_id=row["server_id"],
         base_url=row["base_url"],
+        registration_id=row["registration_id"],
+        listed_rooms=listed_rooms,
         tags=json.loads(row["tags_json"]),
         metadata=_loads(row["metadata_json"]),
         registered_at=row["registered_at"],
@@ -97,13 +99,30 @@ def register_server(
     now = now_iso()
     registered_at, is_new = lease_registered_at(conn, "roomsd_servers", "server_id", server_id, now)
     with conn:
+        conn.execute("begin immediate")
+        prev = conn.execute(
+            "select base_url, registration_id from roomsd_servers where server_id = ?",
+            (server_id,),
+        ).fetchone()
+        if prev is not None and prev["base_url"] == base_url:
+            registration_id = prev["registration_id"]  # heartbeat or lapse recovery
+        else:
+            # New registration or endpoint migration: listings published under any earlier
+            # registration of this server are retired, not carried over (docs#19).
+            registration_id = new_id("reg")
+            conn.execute("delete from listed_rooms where server_id = ?", (server_id,))
+            if prev is not None:
+                db.audit(
+                    conn, caller.identity, "server.migrate", old=prev["base_url"], new=base_url
+                )
         conn.execute(
-            "insert or replace into roomsd_servers (server_id, base_url, tags_json,"
-            " metadata_json, registered_at, last_heartbeat_at, expires_at)"
-            " values (?, ?, ?, ?, ?, ?, ?)",
+            "insert or replace into roomsd_servers (server_id, base_url, registration_id,"
+            " tags_json, metadata_json, registered_at, last_heartbeat_at, expires_at)"
+            " values (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 server_id,
                 base_url,
+                registration_id,
                 json.dumps(req.tags),
                 _json(req.metadata),
                 registered_at,
@@ -113,8 +132,14 @@ def register_server(
         )
         if is_new:
             db.audit(conn, caller.identity, "server.register", base_url=base_url)
-    row = conn.execute("select * from roomsd_servers where server_id = ?", (server_id,)).fetchone()
-    return server_from_row(row)
+        row = conn.execute(
+            "select * from roomsd_servers where server_id = ?", (server_id,)
+        ).fetchone()
+        listed = conn.execute(
+            "select count(*) from listed_rooms where server_id = ? and registration_id = ?",
+            (server_id, registration_id),
+        ).fetchone()[0]
+    return server_from_row(row, listed)
 
 
 @router.delete(
@@ -123,7 +148,10 @@ def register_server(
 def deregister_server(server_id: EntryId, conn: Conn, caller: Caller) -> Response:
     require_self(caller, "roomsd", server_id)
     with conn:
+        # Explicit deletion retires the registration and its listings: re-registering the
+        # same id later starts a new registration and can't resurrect them (docs#19).
         conn.execute("delete from roomsd_servers where server_id = ?", (server_id,))
+        conn.execute("delete from listed_rooms where server_id = ?", (server_id,))
         db.audit(conn, caller.identity, "server.deregister")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -330,13 +358,23 @@ def list_room(req: RoomListing, conn: Conn, caller: Caller, settings: SettingsDe
         # The WHERE makes the ownership check and the write one atomic statement: a
         # listing owned by another server is never overwritten (docs#5).
         cur = conn.execute(
-            "insert into listed_rooms (room_url, server_id, name, purpose, tags_json, updated_at)"
-            " values (?, ?, ?, ?, ?, ?)"
+            "insert into listed_rooms"
+            " (room_url, server_id, registration_id, name, purpose, tags_json, updated_at)"
+            " values (?, ?, (select registration_id from roomsd_servers where server_id = ?),"
+            " ?, ?, ?, ?)"
             " on conflict (room_url) do update set name = excluded.name,"
             " purpose = excluded.purpose, tags_json = excluded.tags_json,"
             " updated_at = excluded.updated_at"
             " where listed_rooms.server_id = excluded.server_id",
-            (room_url, caller.name, req.name, req.purpose, json.dumps(req.tags), now_iso()),
+            (
+                room_url,
+                caller.name,
+                caller.name,
+                req.name,
+                req.purpose,
+                json.dumps(req.tags),
+                now_iso(),
+            ),
         )
         if cur.rowcount == 0:
             raise HTTPException(status.HTTP_409_CONFLICT, "room is listed by another server")
@@ -372,6 +410,10 @@ def search_rooms(
     require_scope(caller, "agent", "roomsd")
     sql = (
         "select r.* from listed_rooms r join roomsd_servers s on s.server_id = r.server_id"
+        # docs#19: only listings of the server's current registration, under its current
+        # prefix, are ever shown.
+        " and s.registration_id = r.registration_id"
+        " and substr(r.room_url, 1, length(s.base_url) + 10) = s.base_url || '/v1/rooms/'"
         f" where s.expires_at > ? and {endpoints.visible_sql('s.base_url')}"
     )
     params: list = [now_iso(), caller.tenant_id, caller.tenant_id]

@@ -62,6 +62,9 @@ create table if not exists service_grants (
 create table if not exists roomsd_servers (
   server_id text primary key,
   base_url text not null,
+  -- docs#19: identifies one registration. Kept across heartbeats and lapses on the same
+  -- endpoint; replaced on endpoint migration or after an explicit DELETE.
+  registration_id text not null,
   tags_json text not null,
   metadata_json text,
   registered_at text not null,
@@ -85,6 +88,7 @@ create table if not exists agentd_instances (
 create table if not exists listed_rooms (
   room_url text primary key,
   server_id text not null,
+  registration_id text not null,
   name text not null,
   purpose text,
   tags_json text not null,
