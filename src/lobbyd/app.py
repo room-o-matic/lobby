@@ -2,7 +2,7 @@ from fastapi import FastAPI
 
 from lobbyd import db, signing
 from lobbyd.config import Settings
-from lobbyd.routes import directory, identity
+from lobbyd.routes import directory, identity, peers
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -23,4 +23,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(identity.router)
     app.include_router(directory.router)
+    app.include_router(peers.router)
     return app

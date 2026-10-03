@@ -71,6 +71,43 @@ create table if not exists listed_rooms (
 
 create index if not exists listed_rooms_server on listed_rooms(server_id);
 
+-- Independent named agents (docs#7): one row per running session of a principal.
+create table if not exists peers (
+  instance_id text primary key,
+  principal text not null,
+  owner text,
+  capabilities_json text not null,
+  availability text not null,
+  max_assignments integer not null,
+  registered_at text not null,
+  last_heartbeat_at text not null,
+  expires_at text not null
+);
+
+create index if not exists peers_principal on peers(principal);
+
+create table if not exists offers (
+  offer_id text primary key,
+  requester text not null,
+  target text not null,
+  room_url text not null,
+  task text not null,
+  issue text,
+  role text,
+  scope_json text,
+  budget_json text,
+  deadline text,
+  state text not null,
+  assigned_instance text,
+  decline_reason text,
+  created_at text not null,
+  updated_at text not null,
+  delivered_at text
+);
+
+create index if not exists offers_target_state on offers(target, state);
+create index if not exists offers_requester on offers(requester, created_at);
+
 create table if not exists audit (
   id integer primary key autoincrement,
   actor text not null,
