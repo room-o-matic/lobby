@@ -11,6 +11,11 @@ class Settings:
     # Identity domain: every identity this lobbyd issues is `name@domain`.
     domain: str = "local"
     access_token_ttl_seconds: int = 900
+    # Key rotation (docs#6): a new key is published this long before it starts signing, so
+    # verifiers' caches (TokenVerifier.cache_seconds, default 300) pick it up first; and a
+    # key can be retired only once its last token has expired, plus clock skew.
+    key_publish_lead_seconds: int = 360
+    clock_skew_seconds: int = 60
     default_lease_ttl_seconds: int = 60
     max_lease_ttl_seconds: int = 600
 

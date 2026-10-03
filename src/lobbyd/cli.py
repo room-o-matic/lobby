@@ -96,39 +96,51 @@ def cmd_signing_list(args: argparse.Namespace) -> int:
     conn = _conn()
     try:
         rows = conn.execute(
-            "select kid, created_at, retired_at from signing_keys order by created_at"
+            "select kid, created_at, activates_at, last_issued_at, retired_at"
+            " from signing_keys order by created_at"
         ).fetchall()
     finally:
         conn.close()
     for r in rows:
-        state = f"retired {r['retired_at']}" if r["retired_at"] else "active"
+        if r["retired_at"]:
+            state = f"retired {r['retired_at']}"
+        else:
+            state = f"signs from {r['activates_at']}, last issued {r['last_issued_at'] or 'never'}"
         print(f"{r['kid']}  created {r['created_at']}  {state}")
     return 0
 
 
 def cmd_signing_rotate(args: argparse.Namespace) -> int:
+    settings = Settings.from_env()
+    lead = 0 if args.now else settings.key_publish_lead_seconds
     conn = _conn()
     try:
-        print(signing.rotate(conn))
+        kid = signing.rotate(conn, lead_seconds=lead)
     finally:
         conn.close()
+    when = "now" if lead == 0 else f"in {lead}s (published now; verifiers pick it up first)"
+    print(f"{kid} signs {when}")
     return 0
 
 
 def cmd_signing_retire(args: argparse.Namespace) -> int:
+    settings = Settings.from_env()
     conn = _conn()
     try:
-        live = conn.execute(
-            "select count(*) from signing_keys where retired_at is null and kid != ?", (args.kid,)
-        ).fetchone()[0]
-        if live == 0:
-            print("error: refusing to retire the only active key; rotate first", file=sys.stderr)
-            return 2
-        if not signing.retire(conn, args.kid):
-            print(f"error: no active key {args.kid!r}", file=sys.stderr)
-            return 1
+        ok = signing.retire(
+            conn,
+            args.kid,
+            min_idle_seconds=settings.access_token_ttl_seconds + settings.clock_skew_seconds,
+            force=args.force,
+        )
+    except signing.RetireRefused as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     finally:
         conn.close()
+    if not ok:
+        print(f"error: no active key {args.kid!r}", file=sys.stderr)
+        return 1
     print(f"retired {args.kid}")
     return 0
 
@@ -172,11 +184,18 @@ def build_parser() -> argparse.ArgumentParser:
     sk = sub.add_parser("signing-key", help="manage token signing keys")
     sk_sub = sk.add_subparsers(dest="sk_command", required=True)
     sk_sub.add_parser("list").set_defaults(func=cmd_signing_list)
-    sk_sub.add_parser("rotate", help="create a new active key").set_defaults(
-        func=cmd_signing_rotate
+    rotate = sk_sub.add_parser(
+        "rotate", help="publish a new key now; it signs after the publish lead"
     )
-    retire = sk_sub.add_parser("retire", help="stop publishing a key (after one token TTL)")
+    rotate.add_argument("--now", action="store_true", help="emergency: sign immediately")
+    rotate.set_defaults(func=cmd_signing_rotate)
+    retire = sk_sub.add_parser(
+        "retire", help="stop publishing a key once its last token has expired"
+    )
     retire.add_argument("kid")
+    retire.add_argument(
+        "--force", action="store_true", help="emergency: retire now (compromised key)"
+    )
     retire.set_defaults(func=cmd_signing_retire)
     return p
 
