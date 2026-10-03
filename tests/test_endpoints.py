@@ -107,8 +107,10 @@ def test_listing_upsert_is_owner_guarded_even_if_prefix_check_is_bypassed(
     conn = db.connect(settings.db_path)
     with conn:
         conn.execute(
-            "insert into listed_rooms (room_url, server_id, name, tags_json, updated_at)"
-            " values ('https://rooms-a.test/v1/rooms/room_9', 'someone-else', 'x', '[]', 'now')"
+            "insert into listed_rooms"
+            " (room_url, server_id, registration_id, name, tags_json, updated_at)"
+            " values ('https://rooms-a.test/v1/rooms/room_9', 'someone-else', 'reg_x', 'x',"
+            " '[]', 'now')"
         )
     conn.close()
     r = client.put(

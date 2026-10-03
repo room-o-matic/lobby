@@ -60,6 +60,10 @@ class RoomsdRegistration(BaseModel):
 class RoomsdServer(BaseModel):
     server_id: str
     base_url: str
+    registration_id: str
+    listed_rooms: int = Field(
+        description="listings held for this registration; roomsd republishes if it's short"
+    )
     tags: list[str]
     metadata: dict[str, JsonValue] | None
     registered_at: str
