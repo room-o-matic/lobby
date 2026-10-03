@@ -6,12 +6,13 @@ are only shown while that server's lease is live.
 """
 
 import json
+import re
 import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 
-from lobbyd import db
+from lobbyd import db, endpoints
 from lobbyd.deps import (
     Caller,
     Conn,
@@ -30,10 +31,33 @@ from lobbyd.models import (
     RoomsdRegistration,
     RoomsdServer,
 )
+from lobbyd.urls import canonical_url
 
 router = APIRouter(prefix="/v1", tags=["directory"])
 
 EntryId = Annotated[str, Path(max_length=64)]
+ROOM_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+
+def canonical_or_422(url: str) -> str:
+    try:
+        return canonical_url(url)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"bad URL {url!r}: {e}") from e
+
+
+def require_endpoint(conn: sqlite3.Connection, caller, base_url: str) -> sqlite3.Row:
+    """Registration must use an endpoint the operator approved for this key (docs#5):
+    owning a name is not owning an endpoint."""
+    url = canonical_or_422(base_url)
+    approval = endpoints.lookup(conn, url)
+    if approval is None or approval["name"] != caller.name or approval["scope"] != caller.scope:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"{url} is not an approved endpoint for {caller.name!r}; an operator must run"
+            f" `lobbyd endpoint approve {caller.name} <url>`",
+        )
+    return approval
 
 
 def _json(value) -> str | None:
@@ -68,6 +92,7 @@ def register_server(
     settings: SettingsDep,
 ) -> RoomsdServer:
     require_self(caller, "roomsd", server_id)
+    base_url = require_endpoint(conn, caller, req.base_url)["url"]
     ttl = lease_ttl(settings, req.ttl_seconds)
     now = now_iso()
     registered_at, is_new = lease_registered_at(conn, "roomsd_servers", "server_id", server_id, now)
@@ -78,7 +103,7 @@ def register_server(
             " values (?, ?, ?, ?, ?, ?, ?)",
             (
                 server_id,
-                req.base_url.rstrip("/"),
+                base_url,
                 json.dumps(req.tags),
                 _json(req.metadata),
                 registered_at,
@@ -87,7 +112,7 @@ def register_server(
             ),
         )
         if is_new:
-            db.audit(conn, caller.identity, "server.register", base_url=req.base_url)
+            db.audit(conn, caller.identity, "server.register", base_url=base_url)
     row = conn.execute("select * from roomsd_servers where server_id = ?", (server_id,)).fetchone()
     return server_from_row(row)
 
@@ -143,6 +168,24 @@ def register_instance(
 ) -> AgentdInstance:
     """Register or heartbeat. The same call does both; send it every ttl/3 or so."""
     require_self(caller, "agentd", instance_id)
+    approval = require_endpoint(conn, caller, req.base_url)
+    base_url = approval["url"]
+    # Capacity and worker types are claims; bound them by what was approved (docs#5).
+    if req.max_sessions > approval["max_sessions"]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"max_sessions {req.max_sessions} exceeds the approved {approval['max_sessions']}",
+        )
+    if req.active_sessions > req.max_sessions:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "active_sessions exceeds max_sessions"
+        )
+    allowed = json.loads(approval["worker_types_json"]) if approval["worker_types_json"] else None
+    if allowed is not None and not set(req.worker_types) <= set(allowed):
+        extra = sorted(set(req.worker_types) - set(allowed))
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"worker types not approved: {extra}"
+        )
     ttl = lease_ttl(settings, req.ttl_seconds)
     now = now_iso()
     registered_at, is_new = lease_registered_at(
@@ -155,7 +198,7 @@ def register_instance(
             " last_heartbeat_at, expires_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 instance_id,
-                req.base_url.rstrip("/"),
+                base_url,
                 json.dumps(req.worker_types),
                 json.dumps(req.profiles),
                 req.max_sessions,
@@ -168,7 +211,7 @@ def register_instance(
         )
         # Heartbeats are frequent; only audit (re)registrations.
         if is_new:
-            db.audit(conn, caller.identity, "registry.register", base_url=req.base_url)
+            db.audit(conn, caller.identity, "registry.register", base_url=base_url)
     row = conn.execute(
         "select * from agentd_instances where instance_id = ?", (instance_id,)
     ).fetchone()
@@ -237,39 +280,49 @@ def room_from_row(row: sqlite3.Row) -> ListedRoom:
     )
 
 
-def require_own_room_url(conn: sqlite3.Connection, server_id: str, room_url: str) -> None:
-    """A server may only list rooms under its own registered base_url."""
+def require_own_room_url(conn: sqlite3.Connection, server_id: str, room_url: str) -> str:
+    """A server may only list rooms under its own registered base_url. Returns the
+    canonical room URL."""
+    room_url = canonical_or_422(room_url)
     server = conn.execute(
         "select base_url from roomsd_servers where server_id = ? and expires_at > ?",
         (server_id, now_iso()),
     ).fetchone()
     if server is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "register this server before listing rooms")
-    if not room_url.startswith(server["base_url"] + "/v1/rooms/"):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, f"room_url must be under {server['base_url']}/v1/rooms/"
-        )
+    prefix = server["base_url"] + "/v1/rooms/"
+    if not room_url.startswith(prefix) or not ROOM_ID_RE.match(room_url[len(prefix) :]):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"room_url must be {prefix}<room_id>")
+    return room_url
 
 
 @router.put("/rooms", tags=["rooms"])
 def list_room(req: RoomListing, conn: Conn, caller: Caller) -> ListedRoom:
     require_scope(caller, "roomsd")
-    require_own_room_url(conn, caller.name, req.room_url)
+    room_url = require_own_room_url(conn, caller.name, req.room_url)
     with conn:
-        conn.execute(
-            "insert or replace into listed_rooms"
-            " (room_url, server_id, name, purpose, tags_json, updated_at)"
-            " values (?, ?, ?, ?, ?, ?)",
-            (req.room_url, caller.name, req.name, req.purpose, json.dumps(req.tags), now_iso()),
+        # The WHERE makes the ownership check and the write one atomic statement: a
+        # listing owned by another server is never overwritten (docs#5).
+        cur = conn.execute(
+            "insert into listed_rooms (room_url, server_id, name, purpose, tags_json, updated_at)"
+            " values (?, ?, ?, ?, ?, ?)"
+            " on conflict (room_url) do update set name = excluded.name,"
+            " purpose = excluded.purpose, tags_json = excluded.tags_json,"
+            " updated_at = excluded.updated_at"
+            " where listed_rooms.server_id = excluded.server_id",
+            (room_url, caller.name, req.name, req.purpose, json.dumps(req.tags), now_iso()),
         )
-        db.audit(conn, caller.identity, "room.list", room_url=req.room_url)
-    row = conn.execute("select * from listed_rooms where room_url = ?", (req.room_url,)).fetchone()
+        if cur.rowcount == 0:
+            raise HTTPException(status.HTTP_409_CONFLICT, "room is listed by another server")
+        db.audit(conn, caller.identity, "room.list", room_url=room_url)
+    row = conn.execute("select * from listed_rooms where room_url = ?", (room_url,)).fetchone()
     return room_from_row(row)
 
 
 @router.delete("/rooms", status_code=status.HTTP_204_NO_CONTENT, tags=["rooms"])
 def unlist_room(room_url: str, conn: Conn, caller: Caller) -> Response:
     require_scope(caller, "roomsd")
+    room_url = canonical_or_422(room_url)
     with conn:
         cur = conn.execute(
             "delete from listed_rooms where room_url = ? and server_id = ?",

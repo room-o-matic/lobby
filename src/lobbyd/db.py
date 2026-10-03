@@ -23,6 +23,17 @@ create table if not exists signing_keys (
   retired_at text
 );
 
+create table if not exists endpoints (
+  url text primary key,
+  name text not null,
+  scope text not null,
+  max_sessions integer not null,
+  worker_types_json text,
+  approved_at text not null
+);
+
+create index if not exists endpoints_name on endpoints(name);
+
 create table if not exists roomsd_servers (
   server_id text primary key,
   base_url text not null,
