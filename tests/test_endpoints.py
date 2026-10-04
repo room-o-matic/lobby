@@ -199,7 +199,7 @@ def test_tokens_only_for_approved_audiences(client, boostie, rooms_a):
 def test_endpoint_approval_rules(settings, make_key, boostie):
     conn = db.connect(settings.db_path)
     try:
-        with pytest.raises(ValueError, match="no live roomsd/agentd key"):
+        with pytest.raises(ValueError, match="no live roomsd/agentd/service key"):
             endpoints.approve(conn, "boostie", "https://x.test")
         make_key("agentd-y", "agentd")
         with pytest.raises(ValueError, match="max_sessions"):

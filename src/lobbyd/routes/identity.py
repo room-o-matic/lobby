@@ -31,6 +31,11 @@ def token(
     """Exchange an API key for an access token valid only at `audience`, which must be
     an operator-approved service endpoint: credentials are never minted for arbitrary
     destinations (docs#5)."""
+    if caller.scope == "service":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "service keys only anchor an approved endpoint; they don't exchange tokens",
+        )
     try:
         audience = canonical_url(req.audience)
     except ValueError as e:

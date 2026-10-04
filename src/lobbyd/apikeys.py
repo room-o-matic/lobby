@@ -16,8 +16,13 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 # agent:  a named agent (Boostie, Missy, …)
 # agentd: an agentd instance; its name is its instance_id
 # roomsd: a roomsd server; its name is its server_id
-Scope = Literal["agent", "agentd", "roomsd"]
-SCOPES: tuple[Scope, ...] = ("agent", "agentd", "roomsd")
+# service: any other service that authenticates its callers with lobbyd tokens (e.g.
+#          dispatchd's operator API). Its key only anchors an approved endpoint, so lobbyd
+#          will mint tokens *for* it; the key itself can't register or exchange tokens.
+Scope = Literal["agent", "agentd", "roomsd", "service"]
+SCOPES: tuple[Scope, ...] = ("agent", "agentd", "roomsd", "service")
+# Scopes that own an operator-approved endpoint; only tenants with can_host hold them.
+HOSTED: tuple[Scope, ...] = ("agentd", "roomsd", "service")
 
 
 @dataclass(frozen=True)
@@ -68,7 +73,7 @@ def create_key(
     tenant = conn.execute("select * from tenants where tenant_id = ?", (tenant_id,)).fetchone()
     if tenant is None:
         raise ValueError(f"no tenant {tenant_id!r}")
-    if scope in ("roomsd", "agentd") and not tenant["can_host"]:
+    if scope in HOSTED and not tenant["can_host"]:
         raise ValueError(f"tenant {tenant_id!r} may not hold service ({scope}) keys")
     other = conn.execute(
         "select scope, tenant_id from api_keys where name = ? limit 1", (name,)
