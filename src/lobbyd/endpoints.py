@@ -9,7 +9,7 @@ service to verify it, which keeps the one-way dependency rule.
 import json
 import sqlite3
 
-from lobbyd import db
+from lobbyd import apikeys, db
 from lobbyd.ids import now_iso
 from lobbyd.urls import canonical_url
 
@@ -26,14 +26,15 @@ def approve(
     max_sessions: int | None = None,
     worker_types: list[str] | None = None,
 ) -> dict:
-    """Approve `url` for the roomsd/agentd key `name`. Raises ValueError on conflicts."""
+    """Approve `url` for the roomsd/agentd/service key `name`. Raises ValueError on
+    conflicts."""
     canonical = canonical_url(url)
     key = conn.execute(
         "select scope, tenant_id from api_keys where name = ? and revoked_at is null limit 1",
         (name,),
     ).fetchone()
-    if key is None or key["scope"] not in ("roomsd", "agentd"):
-        raise ValueError(f"{name!r} has no live roomsd/agentd key; create the key first")
+    if key is None or key["scope"] not in apikeys.HOSTED:
+        raise ValueError(f"{name!r} has no live roomsd/agentd/service key; create the key first")
     cap = max_sessions if max_sessions is not None else DEFAULT_MAX_SESSIONS
     if not 0 <= cap <= MAX_SESSIONS_CEILING:
         raise ValueError(f"max_sessions must be between 0 and {MAX_SESSIONS_CEILING}")

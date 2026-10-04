@@ -39,7 +39,7 @@ uv run lobbyd serve --port 8767
 The CLI works on the local database directly.
 
 ```bash
-lobbyd key create <name> --scope agent|agentd|roomsd [--tenant T] [--endpoint URL] [--label L]
+lobbyd key create <name> --scope agent|agentd|roomsd|service [--tenant T] [--endpoint URL] [--label L]
 lobbyd key list | key revoke <name> | key revoke-id <key_id>
 lobbyd tenant create <tenant_id> | tenant disable|enable <tenant_id> | tenant grant <tenant_id> <service-url>
 lobbyd endpoint approve <name> <url> | endpoint revoke <url> | endpoint list
@@ -48,6 +48,7 @@ lobbyd backup --out DIR | verify-backup DIR | restore DIR --force
 ```
 
 - **Endpoints are operator-approved.** A roomsd or agentd key can only register at, and tokens are only minted for, a canonical URL approved for that key's name.
+- **`service` keys** are for any other service that authenticates its callers with lobbyd tokens, such as dispatchd's operator API. `lobbyd key create dispatchd --scope service --endpoint <its URL>` approves the URL, so agents can get tokens for it. The key itself is inert: it can't exchange tokens or register in the directory, and the endpoint isn't listed.
 - **Tenants** separate parties. Each tenant sees only its own endpoints (plus any it has been granted), and peers and offers never cross tenants.
 - **Key rotation** publishes a new key before it signs. `retire` waits until the last token signed by the old key has expired.
 

@@ -35,8 +35,8 @@ def cmd_key_create(args: argparse.Namespace) -> int:
             conn, args.name, args.scope, tenant_id=args.tenant, label=args.label
         )
         if args.endpoint:
-            if args.scope not in ("roomsd", "agentd"):
-                raise ValueError("--endpoint is only for roomsd/agentd keys")
+            if args.scope not in apikeys.HOSTED:
+                raise ValueError("--endpoint is only for roomsd, agentd and service keys")
             endpoints.approve(conn, args.name, args.endpoint, max_sessions=args.max_sessions)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -281,7 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--scope", choices=apikeys.SCOPES, default="agent")
     create.add_argument("--tenant", default="internal", help="owning tenant (default internal)")
     create.add_argument("--label", help="which deployment holds this credential")
-    create.add_argument("--endpoint", help="roomsd/agentd: also approve this base URL")
+    create.add_argument("--endpoint", help="roomsd/agentd/service: also approve this base URL")
     create.add_argument("--max-sessions", type=int, help="agentd: approved capacity cap")
     create.set_defaults(func=cmd_key_create)
     revoke = key_sub.add_parser("revoke", help="revoke all keys for a name")
@@ -312,7 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     t_grant.add_argument("url")
     t_grant.set_defaults(func=cmd_tenant_grant)
 
-    ep = sub.add_parser("endpoint", help="approve service endpoints (roomsd/agentd)")
+    ep = sub.add_parser("endpoint", help="approve service endpoints (roomsd/agentd/service)")
     ep_sub = ep.add_subparsers(dest="ep_command", required=True)
     approve = ep_sub.add_parser("approve", help="approve a base URL for a roomsd/agentd key")
     approve.add_argument("name")
