@@ -31,7 +31,9 @@ def _kid(private_key: Ed25519PrivateKey) -> str:
     raw = private_key.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     )
-    return base64.urlsafe_b64encode(hashlib.sha256(raw).digest()[:12]).decode().rstrip("=")
+    # Prefixed so a kid never starts with "-": about 1 in 64 base64url ids did, and the CLI
+    # (`signing-key retire <kid>`) then read the kid as an option and failed.
+    return "k" + base64.urlsafe_b64encode(hashlib.sha256(raw).digest()[:12]).decode().rstrip("=")
 
 
 def rotate(conn: sqlite3.Connection, *, lead_seconds: int = 0) -> str:

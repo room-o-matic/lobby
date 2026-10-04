@@ -338,7 +338,10 @@ def build_parser() -> argparse.ArgumentParser:
     retire = sk_sub.add_parser(
         "retire", help="stop publishing a key once its last token has expired"
     )
-    retire.add_argument("kid")
+    retire.add_argument(
+        "kid",
+        help="as `signing-key list` shows it (an older kid starting with '-': retire -- <kid>)",
+    )
     retire.add_argument(
         "--force", action="store_true", help="emergency: retire now (compromised key)"
     )
