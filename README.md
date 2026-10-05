@@ -1,6 +1,6 @@
 # lobbyd
 
-**Identity issuer and directory for roomsd and agentd.** Part of [room-o-matic](https://github.com/room-o-matic/docs).
+**Identity issuer and directory for the room-o-matic services.** Part of [room-o-matic](https://github.com/room-o-matic/docs).
 
 lobbyd does two jobs:
 
@@ -76,7 +76,7 @@ uv sync && uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
 ```
 
-`src/lobbyd/verify.py` is the canonical token verifier, and roomsd and agentd carry copies of it. `src/lobbyd/ops.py` is shared, identical, with both. Architecture notes are in the docs repo's [CLAUDE.md](https://github.com/room-o-matic/docs/blob/main/CLAUDE.md). Issues are tracked in [room-o-matic/docs](https://github.com/room-o-matic/docs/issues).
+`src/lobbyd/verify.py` is the canonical token verifier, and roomsd, agentd and dispatchd carry copies of it. `src/lobbyd/ops.py` is shared, identical, with all three. Architecture notes are in the docs repo's [CLAUDE.md](https://github.com/room-o-matic/docs/blob/main/CLAUDE.md). Issues are tracked in [room-o-matic/docs](https://github.com/room-o-matic/docs/issues).
 
 ## License
 
